@@ -1,0 +1,51 @@
+name: Validate website
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check local links and JavaScript syntax
+        run: |
+          python3 - <<'PYTHON'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit, unquote
+          import subprocess, tempfile
+          class Page(HTMLParser):
+              def __init__(self, path):
+                  super().__init__()
+                  self.path = path
+                  self.in_script = False
+                  self.script = ''
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  for key in ('href', 'src'):
+                      value = attrs.get(key, '')
+                      url = urlsplit(value)
+                      if not value or url.scheme or url.netloc or not url.path:
+                          continue
+                      target = Path('site') / unquote(url.path.lstrip('/')) if url.path.startswith('/') else self.path.parent / unquote(url.path)
+                      assert target.exists(), f'{self.path}: missing {value}'
+                  if tag == 'script' and 'src' not in attrs:
+                      self.in_script = True
+                      self.script = ''
+              def handle_data(self, data):
+                  if self.in_script:
+                      self.script += data
+              def handle_endtag(self, tag):
+                  if tag == 'script' and self.in_script:
+                      with tempfile.NamedTemporaryFile(suffix='.js', mode='w') as script:
+                          script.write(self.script)
+                          script.flush()
+                          subprocess.run(['node', '--check', script.name], check=True)
+                      self.in_script = False
+          for path in Path('site').rglob('*.html'):
+              Page(path).feed(path.read_text())
+              print(f'Validated {path}')
+          PYTHON
